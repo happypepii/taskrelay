@@ -1,4 +1,5 @@
 using StackExchange.Redis;
+using TaskRelay.Shared;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,7 +17,7 @@ app.MapPost("/tasks", async (SubmitTaskRequest request, IConnectionMultiplexer r
         return Results.BadRequest(new { error = "payload is required" });
 
     var db = redis.GetDatabase();
-    var id = await db.StreamAddAsync("tasks-stream", "payload", request.Payload);
+    var id = await db.StreamAddAsync(QueueNames.TaskStream, "payload", request.Payload);
 
     return Results.Accepted($"/tasks/{id}", new { id = id.ToString() });
 });

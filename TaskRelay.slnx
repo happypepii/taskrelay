@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/TaskRelay.Api/TaskRelay.Api.csproj" />
+    <Project Path="src/TaskRelay.Shared/TaskRelay.Shared.csproj" />
     <Project Path="src/TaskRelay.Worker/TaskRelay.Worker.csproj" />
   </Folder>
 </Solution>
