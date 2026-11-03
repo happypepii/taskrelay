@@ -1,3 +1,4 @@
+using System.Net;
 using StackExchange.Redis;
 using TaskRelay.Shared;
 
@@ -13,6 +14,7 @@ public class Worker(IConnectionMultiplexer redis, IConfiguration config, ILogger
         var minIdleMs = config.GetValue("Worker:MinIdleMs", 10000);
         var heartbeatMs = config.GetValue("Worker:HeartbeatMs", 3000);   // 0 = 關閉心跳
         var workMs = config.GetValue("Worker:SimulatedWorkMs", 5000);
+        var taskTimeoutMs = config.GetValue("Worker:TaskTimeoutMs", 60000);
 
         try
         {
@@ -45,7 +47,7 @@ public class Worker(IConnectionMultiplexer redis, IConfiguration config, ILogger
                 if (claimed.ClaimedEntries.Length > 0)
                 {
                     await ProcessAsync(db, consumer, claimed.ClaimedEntries[0], "claimed",
-                        workMs, heartbeatMs, stoppingToken);
+                        workMs, heartbeatMs, taskTimeoutMs, stoppingToken);
                     continue;
                 }
 
@@ -56,7 +58,7 @@ public class Worker(IConnectionMultiplexer redis, IConfiguration config, ILogger
                 if (entries.Length > 0)
                 {
                     await ProcessAsync(db, consumer, entries[0], "new",
-                        workMs, heartbeatMs, stoppingToken);
+                        workMs, heartbeatMs, taskTimeoutMs, stoppingToken);
                     continue;
                 }
 
@@ -71,24 +73,37 @@ public class Worker(IConnectionMultiplexer redis, IConfiguration config, ILogger
 
     private async Task ProcessAsync(
         IDatabase db, string consumer, StreamEntry entry, string source,
-        int workMs, int heartbeatMs, CancellationToken ct)
+        int workMs, int heartbeatMs, int taskTimeoutMs, CancellationToken ct)
     {
         var payload = entry.Values[0].Value;
         logger.LogInformation("{Consumer} start {Id} payload={Payload} ({Source})",
             consumer, entry.Id, payload, source);
 
-        using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var timeoutCts = new CancellationTokenSource(taskTimeoutMs);
+        using var taskCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);     // if ct or timeout => stop task
+
         var heartbeat = heartbeatMs > 0
-            ? HeartbeatAsync(db, consumer, entry.Id, heartbeatMs, heartbeatCts.Token)
+            ? HeartbeatAsync(db, consumer, entry.Id, heartbeatMs, taskCts.Token)
             : Task.CompletedTask;
 
         try
         {
-            await Task.Delay(workMs, ct);   // 之後這裡會換成真正的工作
+            await Task.Delay(workMs, taskCts.Token);   // 之後這裡會換成真正的工作
+        }
+        catch (OperationCanceledException)
+        {
+            if(ct.IsCancellationRequested) // 程式被終止
+            {
+                throw; // 讓ExecuteAsync去接exception 然後break 跳出迴圈
+            }
+
+            // 這張單子逾時 → 記一行 log,然後回到迴圈繼續拿下一張單子
+            logger.LogInformation("{Consumer} timeout {Id}", consumer, entry.Id);
+            return;
         }
         finally
         {
-            heartbeatCts.Cancel();
+            taskCts.Cancel();
             await heartbeat;
         }
 
